@@ -1,0 +1,794 @@
+---
+title: "Prepare and subset MIPS ped file for Identity Check"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(magrittr)
+library(compare)
+library(janitor)
+library(readxl)
+library(ggplot2)
+library(Hmisc)
+```
+
+# 1. File import.
+
+## 1.1 Clean  MIPS ped file (full).
+Produced from `clean_MIPS_ped.Rmd` ; removed KOR duplicates, binned affected status, etc.
+```{r}
+mips.ped <- read_tsv("~/Box Sync/MIPS/00_SampleLists/Clean/targeted_seq_ped_clean.txt")
+```
+*n = 14,186* samples.
+
+## 1.2 Clean MIPS Sample Manifest.
+```{r message=FALSE}
+mips.manifest <- read_tsv("~/Box Sync/MIPS/00_SampleLists/Clean/mips_sampleManifest_clean_jointSampleNames.txt")
+```
+
+## 1.3 List of ~15M SNPs in snp150Common.
+http://hgdownload.cse.ucsc.edu/goldenPath/hg38/database/snp150Common.txt.gz
+[Why I chose this list: OneNote][https://goo.gl/xa5kUH]
+
+```{r}
+# 800MB zipped | 6GB unzipped (!) [15M SNPs]
+snp150.common <- read_tsv("~/Box Sync/MIPS/IdentityCheck/snp150/snp150Common.txt.gz", col_names=F)
+```
+
+## 1.4 List of ~23,000 SNPs interrogated by Peddy.
+```{r}
+peddy.snps <- read_tsv("~/Box Sync/MIPS/IdentityCheck/peddy_1kG_sites.txt", col_names = F)
+```
+
+## 1.5 BED file of MIPS  regions targeted for sequencing.
+*4,945 targeted regions with coverage*
+```{r} 
+excel_sheets("~/Box Sync/MIPS/SequencingTargets/2-22-16 - ASD Targeted Sequencing Panel for Review.xlsx") 
+```
+```{r}
+target.regions <- read_excel("~/Box Sync/MIPS/SequencingTargets/2-22-16 - ASD Targeted Sequencing Panel for Review.xlsx", sheet=2)
+# Sheet 3 has the regions which ended up being covered in sequencing.
+target.bed <- read_excel("~/Box Sync/MIPS/SequencingTargets/2-22-16 - ASD Targeted Sequencing Panel for Review.xlsx", sheet=3, col_names = F)
+```
+
+### 1.4.1 What is the difference between the samples in sheet 1 and sheet 2?
+Rows: 4616 coverage / 4945 BED : 29 more rows in BED file, but 3 fewer genes?
+
+*3 genes* were dropped in the BED file.
+```{r}
+setdiff(target.coverage$REGION_NAME, target.bed$X__4)
+```
+
+Number of distinct region names (genes) in each target list. 
+*3 genes* were dropped in the BED file.
+```{r}
+n_distinct(target.coverage$REGION_NAME)
+n_distinct(target.bed$X__4)
+```
+
+Some ranges were split and some were dropped. The list of ranges is slightly different in the BED file than in the `coverage` sheet.
+```{r cols.print=4}
+setdiff(
+  target.bed %>% rename(CHROMOSOME = X__1, START = X__2, STOP = X__3, REGION_NAME = X__4),
+  select(target.coverage, CHROMOSOME, START, STOP, REGION_NAME)
+)
+```
+
+Regions that were not covered at 100% - were split up in BED?
+[Need to check this.][]
+```{r}
+target.coverage %>% 
+  filter(! FRAC_COVERED_EITHER_STRAND == 1)
+```
+
+# ___________________________
+
+# 2. Explore & convert data.
+
+## 2.1 Breakdown by Affected Status 
+Of children in the MIPS ped.
+*n=3,383* affected children, or *91.5%* of all children in the MIPS ped.
+```{r}
+filter(mips.ped, !(fatherID == 0) & !(motherID == 0)) %>% 
+  tabyl(status)
+```
+
+## 2.2 Convert motherID and fatherID columns 
+To the same format as Sample_ID (UCSF_PatientID_SampleID format).
+```{r}
+mips.ped %<>% 
+  group_by(Family_ID) %>% 
+  mutate(motherID = ifelse(motherID != "0", 
+                           Sample_ID[grepl(motherID[motherID != "0"][1], Sample_ID)], 
+                           "0"), 
+         fatherID = ifelse(fatherID != "0", 
+                           Sample_ID[grepl(fatherID[fatherID != "0"][1], Sample_ID)], 
+                           "0")
+  )
+```
+
+Write out corrected ped file with father_IDs and mother_IDs in the same format (UCSF_XXX_XXX) as Sample_ID.
+```{r}
+write_tsv(mips.ped, "../00_SampleLists/Clean/ped.txt")
+# Already saved as targeted_seq_ped_clean.txt.
+```
+*n = 14,186* samples.
+
+## 2.3 Subset .fam samples for PLINK based on which sameples are in the VCF.
+`.fam` and `subsetVCF.fam` were created in `bash`.
+(Add commands here; currently in OneNote.)
+
+```{bash}
+awk 'NR==FNR{a[$1];next}$2 in a==1' mips_vcf_sampleIDs.txt targeted_seq_ped_clean.fam > targeted_seq_ped_clean_subsetVCF.fam
+```
+
+.fam file containing only samples found in VCF.
+*n = 13,389* samples.
+```{r}
+fam.in.vcf <- read_tsv("KING/PLINK_ConvertVCF/custom_fam_files/targeted_seq_ped_clean_subsetVCF.fam",
+                       col_names = F)
+```
+
+# 2.4. Update pedigree info on dummy .fam file created by PLINK --make-bed.
+Join the IIDs in `fam.plink` (dummy .fam) with the `targeted.seq.ped` columns, which contain the known FIDs, parentIDs, sex and genotypes.
+```{r}
+fam.plink <- read_tsv("KING/PLINK_ConvertVCF/make-bed_output_v1-recalVCF/mips.fam", col_names = F) %>% 
+  rename(IID = X2)
+
+fam.from.ped <- read_tsv("KING/PLINK_ConvertVCF/custom_fam_files/targeted_seq_ped_clean.fam", col_names = F)
+fam.in.vcf %<>% rename(FID=X1, IID=X2, fatherID=X3, motherID=X4, sex=X5, phenotype=X6)
+
+ped.clean <- read_tsv("../00_SampleLists/Clean/targeted_seq_ped_clean.txt")
+```
+
+Why does `ped.clean` have 22 fewer samples than `fam.from.ped` ?
+```{r}
+names(fam.from.ped) <- names(ped.clean)
+
+setdiff(fam.from.ped, ped.clean)
+setdiff(ped.clean, fam.from.ped)
+```
+Answer: In `fam.from.ped`, I added back the samples with `Uknown/Unlabeled` Famuly_IDs that had been excluded by Brooke in making the original ped file (`targeted_seq_ped.txt`), in addition to the duplicate samples I had removed during the cleaning of `targeted_seq_ped.txt`. I added them back when I was trying to make a `.fam` file that would work with PLINK for `--make-bed`.
+
+These samples are all in the VCF, so they are all in the PLINK-generated dummy `.fam`. 
+Therefore, I will join the dummy `.fam` with `.fam.from.ped` (has unknown family and duplicate samples added back). (*EXPERIMENT*)
+```{r}
+setdiff(fam.from.ped, ped) %>% .$Sample_ID %in% fam.plink$IID
+```
+
+Make sure that `fam.from.ped` parentIDs are intact, i.e., the same as in the original `ped.clean`. (Parent IDs NOT changed to `0`.)
+*TRUE* 
+
+> dplyr::intersect(y, z)
+> Rows that appear in both y and z.
+
+```{r}
+intersect(fam.from.ped, ped.clean)
+```
+
+```{r}
+fam.plink.update <- inner_join(fam.plink, fam.from.ped, by=c("IID" ="Sample_ID")) %>% 
+  select(Family_ID, IID, fatherID, motherID, sex, status)
+
+fam.plink.update
+```
+
+Some samples (*n=195*) don't have a fatherID / motherID (`NA`), but **do** have a FamilyID. 
+Most of these are `status == 2` samples, and one sample per family.
+```{r, rows.print=10}
+filter(fam.plink.update, is.na(fatherID) | is.na(motherID) | is.na(Family_ID) | is.na(sex) | is.na(status))
+```
+
+Change `fatherID/motherIDs` that are `NA` to "0".
+```{r}  
+fam.plink.update %<>%
+  mutate(fatherID = case_when(is.na(fatherID) ~ "0", TRUE ~ fatherID),
+         motherID = case_when(is.na(motherID) ~ "0", TRUE ~ motherID)
+         )
+```
+
+Export updated `.fam` file for use in KING.
+`mips_updatedWithPed.fam`
+```{r}
+write_tsv(fam.plink.update, "./KING/PLINK_ConvertVCF/mips_updatedWithPed.fam", col_names = F)
+```
+
+## Case-control sibling pairs — add shared dummy parent IDs so they will be interpreted as `related` by KING.
+
+FamilyIDs that appear only 2x in `targeted_seq_ped` (sibling pairs) make the bulk of these cases (but not all of them).
+
+Modifying `targeted_seq_ped` — originally I was going to modify `plink.fam.update`, but this file has some 2-member familyIDs with mom+dad only (where the child was lost in VCF; unprocessed or failed.) See Family_UD `0005`. 
+
+Identify (and mark?) familyIDs that have only 2 occurences, then add dummy fatherID / motherIDs to link them together.
+[Asked how to do this in S0][https://stackoverflow.com/questions/50474270/]
+```{r}
+fam.from.ped %<>%
+    group_by(Family_ID) %>%
+    mutate(FamilySize = n()) %>%
+    rowwise() %>%
+    mutate(motherID = if_else(FamilySize == 2 & motherID == 0,
+                              paste0(Family_ID, '_mother'),
+                              motherID),
+           fatherID = if_else(FamilySize == 2 & fatherID == 0,
+                              paste0(Family_ID, '_father'),
+                              fatherID))
+```
+
+There are *~4,000* case-control samples — *~2,000* sibling pairs. To all of these, I assigned shared dummy mother / father IDs.
+```{r}
+filter(fam.from.ped, FamilySize == 2)
+```
+
+Join this new `fam.from.ped` that has been corrected for case-control sibling pairs with `fam.plink` (the dummy `.fam`).
+```{r}
+fam.plink.update <- inner_join(fam.plink, fam.from.ped, by=c("IID" ="Sample_ID")) %>% 
+  select(Family_ID, IID, fatherID, motherID, sex, status)
+
+fam.plink.update
+```
+All rows in `fam.plink` have a corresponding sample in `fam.from.ped`. (*n=13,389*)
+
+Change `fatherID/motherIDs` that are `NA` to "0". *n = 195* samples with NA motherID / fatherID.
+```{r}  
+fam.plink.update %>% filter(is.na(fatherID) | is.na(motherID))
+
+fam.plink.update %<>%
+  mutate(fatherID = case_when(is.na(fatherID) ~ "0", TRUE ~ fatherID),
+         motherID = case_when(is.na(motherID) ~ "0", TRUE ~ motherID)
+         )
+```
+
+Export this updated .fam file made by PLINK — `fam.plink.update` for use in KING.
+```{r}
+write_tsv(fam.plink.update, "./KING/PLINK_ConvertVCF/make-bed_out_recalVCF/mips_updatedWithPed_casecontrolParents.fam", col_names = F)
+```
+
+Run KING with the new version of mips.fam (`mips_updatedWithPed_casecontrolParents.fam`) 
+```{bash}
+~/Software/KINGcode/king -b mips.bed --fam mips_updatedWithPed_casecontrolParents.fam --bim mips.bim --related
+```
+Output log in: `/MIPS/03_IdentityCheck/KING/KING_out`
+
+[Go to:][Plot KING results]
+
+[NOT NECESSARY ANYMORE][.]
+## 2.5 Convert fatherIDs / motherIDs to `0` if not in SampleID column.
+This means they were not in the VCF; didn't make it into the filtered `.fam`.
+
+FatherIDs / MotherIDs *not in* SampleID column (excluded from VCF).
+```{r}
+setdiff(fam.in.vcf$X3, fam.in.vcf$X2) %>% length()
+setdiff(fam.in.vcf$X4, fam.in.vcf$X2) %>% length()
+```
+Remove children from VCF?
+Or just add parents later in PLINK with --update-parents?
+
+```{r}
+fam.in.vcf.mod <- fam.in.vcf %>% 
+  mutate(X3 = case_when(X3 %nin% X2 ~ "0",
+                             TRUE   ~ X3),
+         X4 = case_when(X4 %nin% X2 ~ "0",
+                             TRUE   ~ X4)
+        )
+
+setdiff(fam.in.vcf.mod$X3, test$X2)
+setdiff(fam.in.vcf.mod$X4, test$X2)
+```
+
+```{r}
+write_tsv(fam.in.vcf.mod, "KING/PLINK_ConvertVCF/targeted_seq_ped_clean_subsetVCF_corrected.fam", col_names = F)
+```
+
+```{r}
+vcf.samples <- read_delim("KING/PLINK_ConvertVCF/mips_vcf_sampleIDs.txt", "\t", col_names = F)
+sort.file <- read_delim("KING/PLINK_ConvertVCF/IDsort.list2", "\t", col_names = F)
+
+setdiff(vcf.samples$X1, fam.in.vcf$X2)
+setdiff(fam.in.vcf$X2, vcf.samples$X1)
+
+sum(vcf.samples$X1 %in% fam.in.vcf$X2)
+
+setdiff(fam.in.vcf.mod$X4, vcf.samples$X1)
+
+setdiff(vcf.samples$X1, sort.file$X2)
+
+all.equal(vcf.samples$X1, sort.file$X2)
+
+compare(vcf.samples$X1, fam.in.vcf.mod$X2, ignoreOrder = TRUE)
+```
+
+# ___________________________
+
+# 3. SNP list overlap.
+Check proportion of Peddy interrogation SNPs that in our sequencing data (targeted regions).
+[Following advice from:][https://www.biostars.org/p/312525/#312536]
+[(Deleted 5/2/18) Solved gawk issue as explained here:][https://github.com/Homebrew/homebrew-core/issues/27030]
+
+## 3.1 Format BED file of covered target regions in our MIPS sequencing data.
+```{r}
+write_tsv(target.bed, "Box Sync/MIPS/SequencingTargets/coveredRegions-MIPS.bed", col_names = F)
+```
+
+3.1.1 Sort targeted regions BED in bash.
+```{bash}
+sort-bed coveredRegions-MIPS.bed > coveredRegions-MIPS.sorted.bed
+```
+
+## 3.4 Convert `snp.150.common` to BED format (in bash).
+
+• In orginal file, there are two classes of start/end positions:
+  a. When there's an insertion w/ respect to the reference, the start/end are identical.
+  b. When it's a base change, the start/end are in BEDtools format (start offset by -1.)
+
+  a. 585	chr1	10177	10177	rs367896724	0	+	-	-	-/C	genomic	insertion	       
+  b. 585	chr1	11007	11008	rs575272151	0	+	C	C	C/G	genomic	single
+
+  Change the start site for insertion-type SNPs to n-1.
+  [SO: awk: change a field's value conditionally based on the value of another column ][goo.gl/7mfNpS]
+  Use `gawk -vOFS="\t"` to make sure awk produces correct output.
+
+• Original file is already sorted by chrom/pos.
+
+```{bash}
+# Get rid of column 19 which has empty values at some rows and messes things up downstream:
+zcat < snp150Common.txt.gz | gcut -f19 --complement  > snp150Common.txt
+# gzip file again after correcting.
+gzip snp150Common.txt
+
+zcat < snp150Common.txt.gz | gawk -vOFS="\t" '{ if ($3 == $4) $3=$3-1; print $0 }' | cut -f 2,3,4,5,8,9,10,12,16,21,22,23,24  > snp150Common.bed
+
+```
+
+Grabbing fields for BED file:
+  chrom
+  chromStart
+  chromEnd
+  name
+  refNCBI
+  refUCSC
+  observed
+  func
+  alleleFreqCount
+  alleles
+  alleleNs
+  alleleFreqs
+
+
+## 3.3 Convert `peddy.snps` to BED format (in bash).
+  Output file: `peddy_1kG_sites.bed`
+
+  Original file looks like this:
+  
+    > head peddy_1kG_sites.txt 
+    1:15820:G:T
+    1:876499:A:G
+    1:887560:A:C
+    1:887801:A:G
+    1:888639:T:C
+    1:888659:T:C
+    1:889158:G:C
+    1:889159:A:C
+    1:897325:G:C
+    1:897738:C:T
+
+```{bash}
+
+gawk -vOFS="\t" -vFS=":" '{ print "chr"$1, ($2 - 1), $2, $3"/"$4; }' peddy_1kG_sites.txt | sort-bed - > peddy_1kG_sites.bed
+
+```
+
+
+## 3.3 Compute overlap between peddy SNPs and our targeted regions using `bedmap`:
+```{bash}
+bedmap --echo --count --echo-map --delim '\t' peddy_1kG_sites.bed coveredRegions-MIPS.sorted.bed | sort -rk5 > overlap_peddySNPs_MIPScoveredRegions.bed
+bedmap --echo --count --echo-map --delim '\t' coveredRegions-MIPS.sorted.bed peddy_1kG_sites.bed | sort -rk5 > overlap_MIPScoveredRegions_peddySNPs.bed
+```
+
+## 3.4 How many SNPs are in our targeted regions?
+Using `bedmap`.
+
+• Using `snp150Common.bed`
+-------------------------------------------------------------------------------
+
+Compute overlap between snp150 SNPs and our targeted (and covered) regions.
+```{bash}
+
+bedmap --echo --count --echo-map --delim '\t' snp150Common.bed ../coveredRegions-MIPS.sorted.bed | sort -rk14  > overlap_snp150Common_MIPScoveredRegions.bed
+```
+
+Count the number of snp150 SNPs that overlap with our targeted regions: 
+* SNPs in our targeted regions.* (Out of ~15M SNPs)
+```{bash}
+awk '{print $14}' overlap_snp150Common_MIPScoveredRegions.bed | sort | uniq -c
+```
+  Output:
+  15122496 0
+  1601 1
+  
+*n =1,601 SNPs from snp150Common are in MIPS covered regions.*
+
+---------------------------------------------------------------------------------
+Converse bedmap; MIPS covered regions first.
+*n = 1,601 SNPs from snp150Common are in MIPS covered regions.*
+```{bash}
+
+snp150 carmensandoval$ bedmap --echo --count --echo-map --delim '\t' ../coveredRegions-MIPS.sorted.bed snp150Common.bed | sort -rk14  > overlap_MIPScoveredRegions_snp150Common.bed
+```
+
+
+• Using [SNP database from BROAD]
+--------------------------------------------------------------------------------------
+
+• Using [SNP database from BROAD][https://data.broadinstitute.org/mpg/snpsnap/database_download.html]
+
+Format BROAD SNPs list to BED:
+
+  Fields I chose to include in BED:
+  https://data.broadinstitute.org/mpg/snpsnap/documentation.html#snp_annotation_input_snps_annotated
+
+Fix file for missing values (so that `awk` doesn't do weird stuff later:
+Output file: `broadSNPs.tab`
+```{bash}
+sed 's/            /       NA      /g' ld0.5_collection.tab > broadSNPs.tab
+
+TEST
+
+HEAD -n10000 ld0.5_collection.tab | sed 's/            /       NONE      /g'  > broadSNPs.tab
+```
+
+Including IDs of nearest genes / protein-coding genes / genes the SNP is located within (if any) to check for the frequency of these in the overlap.
+*3:30m runtime*
+```{bash}
+# Print additional columns: only TRUE/FALSE 'within gene / within protein-coding gene' flags and nearest gene / nearest protein-coding gene IDs.
+tail -n+2 broadSNPs.tab | gawk -F'[:\t]' -vOFS="\t" '{ print "chr"$1, ($2 - 1), $2, $3}'
+
+, $19, $20, $21}' | sort-bed  - > broadSNPs.sorted.bed
+
+
+tail -n+2 broadSNPs.tab | gawk -F'[:\t]' -vOFS="\t" '{ print "chr"$1, ($2 - 1), $2, $3, $18, $19, $20, $21}' > broadSNPs.bed
+
+
+```
+
+Compute overlap between BROAD SNPs and our targeted (and covered) regions.
+6:30m runtime.
+```{bash}
+bedmap --echo --count --echo-map --delim '\t' broadSNPs.sorted.bed ../coveredRegions-MIPS.sorted.bed | sort -rk8  > overlap_broadSNPs_MIPScoveredRegions.bed
+```
+
+Count the number of Broad SNPs that overlapped with our targeted regions: 
+*3,050 SNPs in our targeted regions.* (Out of ~9M SNPs)
+```{bash}
+awk '{print $4}' overlap_MIPScoveredRegions_broadSNPs.bed | sort | uniq -c
+
+9532009 0
+3050    1
+```
+
+--------------------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ___________________________
+
+# 4. Subset samples for fast-testing Peddy.
+
+Pick 5 families at random from MIPS ped.
+```{r}
+x <- sample(mips.ped$Family_ID, 5)
+x
+```
+
+Subset the samples belonging to those families from `mips.ped`.
+```{r}
+subset <- filter(mips.ped, Family_ID %in% x)
+subset
+```
+
+Check that all 5 selected families have at least 3 members (are trios; no case-controls).
+```{r}
+table(subset$Family_ID)
+```
+
+# ___________________________
+
+
+# 5. Run KING.
+
+Run KING with the new version of mips.fam (`mips_updatedWithPed_casecontrolParents.fam`) 
+```{bash}
+~/Software/KINGcode/king -b mips.bed --fam mips_updatedWithPed_casecontrolParents.fam --bim mips.bim --related
+```
+Output log in: `/MIPS/03_IdentityCheck/KING/KING_out`
+
+Import `king.kin`. This file contains the expected and observed kinship coefficients for each pair-wise comparison within the families specified in `mips_updatedWithPed_casecontrolParents.fam`.
+[Within-family pairwise kinship estimates from KING.][.]
+
+*n=13,419* pair-wise comparisons, across *n=4,562* families.
+
+```{r message=FALSE}
+king.kin <- read_tsv("KING/KING_out/king.kin")
+```
+
+*n=4,562* families in `king.kin`, out of *5,119* families in the full `.fam` file used for KING.
+```{r}
+tibble("Families in king.kin" = n_distinct(king.kin$FID),
+       "Families in fam.plink.update" = n_distinct(fam.plink.update$Family_ID))
+```
+
+Why are these *557* families missing?
+-> Idenitfy missing families:
+```{r}
+fams.nin.king.kin <- anti_join(fam.plink.update, king.kin, by=c("Family_ID" = "FID"))
+fams.nin.king.kin
+```
+
+I suspect that they are all single-individual "families".
+*YES* ;  no pair-wise comparisons possible here, therefore not in `king.kin`.
+```{r}
+count(fams.nin.king.kin, Family_ID) %>% count(n) %>%
+  rename(FamilySize = n, Occurences = nn)
+```
+
+How many ERRORS / WARNINGS; error distribution by relationship type.
+```{r}
+tabyl(king.kin, Phi, Error) %>% adorn_totals(where = c("row", "col")) %>% as.tibble()
+```
+About 1/2 of the Phi == 0 pairs (unrelated) have an [ERROR][flag].
+Most of the Phi == 0.25 pairs (P0 / FS) [DO NOT][have an ERROR flag].
+
+Many of the sample pairs marked as `unrelated` are actually case-control sibling pairs.
+Because they don't have a shared parent in the pedigree, they don't get the correct `Phi == 0.25` or `Z0 == 0` value, even though they share a `FamilyID`. 
+These are sample-pairs whose family appears only once (one row) in `king.kin` (but appears twice in the `.fam` [two rows]).
+
+*SOLUTION:*
+Create a dummy `fatherID` and `motherID` for each case-control sibling pair so that they are interpreted to be related by KING when reading the `.fam.`
+
+Also, check that fatherIDs and motherIDs are the oriingal ones even if they are not in the SampleID column (not in the VCF). Othersise, we are losing sibling relationships. Check what the `.fam` file used here has as values for non-VCF fatherIDs / motherIDs.
+
+## Plot KING results.
+
+### Plot relationships vs kinship coefficients.
+Relationships stated in the pedigree vs. estimated kinship coefficient from SNPs.
+
+Taken from `king_relplot.R` -- Get mz twins, full siblings, parent-siblings, unrelated pairs (parents).
+```{r}
+d0 <- king.kin$Phi == 0.5                          # mz twins / duplicates
+d1.PO <- king.kin$Phi == 0.25 & king.kin$Z0 == 0   # parent-child
+d1.FS <- king.kin$Phi == 0.25 & king.kin$Z0 > 0    # full siblings
+d2 <- king.kin$Phi == 0.125                        # 2nd degree
+dU <- king.kin$Phi == 0                            # unrelated
+dO <- !d0 & !d1.PO & !d1.FS & !d2 & !dU
+```
+
+Add column `$Relationship` to `king.kin` based on the values of Phi and Z0.
+```{r}
+king.kin %<>%
+  mutate(Relationship = case_when(.$Phi == 0.25 & Z0 == 0 ~ "parent-child",
+                                  .$Phi == 0.25 & Z0 > 0 ~ "full-sibling", 
+                                  .$Phi == 0.5 ~ "mz-twin", 
+                                  .$Phi == 0.125 ~ "2nd-degree",
+                                  .$Phi == 0 ~ "unrelated",
+                                  TRUE ~ "NA"            
+                                  )
+         )
+```
+
+\Plot stated Relationships vs kinship coefficients \AFTER adding dummy parents for case-control siblings.
+```{r}
+ggplot(king.kin, aes(Relationship, Kinship)) +
+  geom_jitter(aes(colour=factor(Error)), alpha=0.5) +
+  scale_color_manual(values=c("#50C878", "#FADA5E","red"),
+                     labels=c("0", "WARNING", "ERROR")) +
+  theme_hc(bgcolor = "darkunica", base_size = 12) + 
+  theme(plot.title = element_text(hjust = 0.1), 
+        plot.subtitle = element_text(hjust = 0.11, vjust=1), 
+        axis.title.y=element_text(vjust = 2),
+        axis.title.x=element_text(vjust = -2)
+        ) +
+  scale_y_continuous(breaks=c(-0.5, -0.25, 0, 0.25, 0.5)) +
+  labs(title="Kinship Coefficient",
+       subtitle="within-family pairwise estimate",
+       x="Stated Relationship", 
+       y="Kinship Coefficient estimated from SNPs",
+       colour="Flag"
+      )
+
+```
+```{r}
+library(ggforce)
+
+ggplot(filter(king.kin, !Relationship=="NA")) +
+  geom_sina(aes(x=Relationship, y=Kinship, colour=factor(Error)), alpha=0.3, scale=F) +
+  scale_color_manual(values=c("#50C878", "#FADA5E","red"),
+                     labels=c("0", "WARNING", "ERROR")) +
+  theme_hc(bgcolor = "darkunica", base_size = 12) + 
+  theme(plot.title = element_text(hjust = 0.1), 
+        plot.subtitle = element_text(hjust = 0.11, vjust=1), 
+        axis.title.y=element_text(vjust = 2),
+        axis.title.x=element_text(vjust = -2)
+        ) +
+  scale_y_continuous(breaks=c(-0.5, -0.25, 0, 0.25, 0.5)) +
+  labs(title="Kinship Coefficient",
+       subtitle="within-family pairwise estimate",
+       x="Stated Relationship", 
+       y="Kinship Coefficient estimated from SNPs",
+       colour="Flag"
+      )
+
+```
+⬆️
+Has the distribution actually changed from before updating the parents for the case-control siblings in the .ped and .fam files? 
+--------------------
+i.e., Are there fewer points in the `Unrelated` category, and more in the `Full-Sibling` category?
+**YES** — 1,822 NEW sibling pairs.
+
+➡️ `king.kin`
+----------
+*n=1,841* unrelated samples in `king.kin` ([AFTER][adding dummy case-control parents]) — all z0 == 1 and Phi == 0.
+```{r}
+king.kin %>%
+  # filter(Relationship == "unrelated" | Relationship == "full-sibling") %>%
+  tabyl(Relationship, Error) %>% adorn_totals(where=c("row", "col")) %>% as.tibble
+```
+⬆️ [PENDING][Who are these 5 'NA' pairs, and why do they come up only AFTER adding the dummy parents?]
+All pairs in the `NA` Stated Relationship group have a [Phi == 0.375][— What does this mean?] 
+```{r}
+king.kin %>% filter(Relationship == "NA")
+```
+
+➡️ `kin.kin.nodummy`
+----------
+How many `unrelated` and `full-sibling` relationships were there in `king.kin` [BEFORE][updating the dummy parents]?
+```{r message=FALSE}
+king.kin.nodummy <- read_tsv("KING/KING_otherRuns/king_run02_caseControlParents_notCorrected/king.kin")
+```
+
+Add column `$Relationship` to `king.kin` based on the values of Phi and Z0.
+```{r}
+king.kin.nodummy %<>%
+  mutate(Relationship = case_when(.$Phi == 0.25 & Z0 == 0 ~ "parent-child",
+                                  .$Phi == 0.25 & Z0 > 0 ~ "full-sibling", 
+                                  .$Phi == 0.5 ~ "mz-twin", 
+                                  .$Phi == 0.125 ~ "2nd-degree",
+                                  .$Phi == 0 ~ "unrelated",
+                                  TRUE ~ "NA"            
+                                  )
+         )
+```
+
+*n=3,651* unrelated samples in `king.kin` ([BEFORE][adding dummy case-control parents]) — all z0 == 1 and Phi == 0.
+```{r}
+king.kin.nodummy %>%
+  # filter(Relationship == "unrelated" | Relationship == "full-sibling") %>%
+  tabyl(Relationship, Error) %>% adorn_totals(where=c("row", "col")) %>% as.tibble
+```
+
+\Plot Relationship vs Kinship Coefficient; \BEFORE adding dummy parents.
+```{r}
+ggplot(filter(king.kin.nodummy, !Relationship=="NA")) +
+  geom_sina(aes(x=Relationship, y=Kinship, colour=factor(Error)), alpha=0.3, scale=F) +
+  scale_color_manual(values=c("#50C878", "#FADA5E","red"),
+                     labels=c("0", "WARNING", "ERROR")) +
+  theme_hc(bgcolor = "darkunica", base_size = 12) + 
+  theme(plot.title = element_text(hjust = 0.1), 
+        plot.subtitle = element_text(hjust = 0.11, vjust=1), 
+        axis.title.y=element_text(vjust = 2),
+        axis.title.x=element_text(vjust = -2)
+        ) +
+  scale_y_continuous(breaks=c(-0.5, -0.25, 0, 0.25, 0.5)) +
+  labs(title="Kinship Coefficient [Before Case-Control Parents Correction]",
+       subtitle="within-family pairwise estimate",
+       x="Stated Relationship", 
+       y="Kinship Coefficient estimated from SNPs",
+       colour="Flag"
+      )
+```
+
+## Figure out who the `ERROR` and `WARNING`-flagged sample pairs are — what is the Relationship between them?
+
+1. Add Relationship — (from SampleManifest) column to each pair-wise comparison in `king.kin`.
+--------------
+```{r}
+manifest.tmp <- 
+  mips.manifest %>%
+  select(SampleName, Relationship, Gender) %>% 
+  rename(Role = Relationship)
+
+king.kin <-
+  left_join(king.kin, manifest.tmp, by=c("ID1" = "SampleName")) %>%
+  rename(Role_ID1 = Role, Sex_ID1 = Gender) %>%
+    left_join(., manifest.tmp, by=c("ID2" = "SampleName")) %>%
+    rename(Role_ID2 = Role, Sex_ID2 = Gender)
+
+king.kin %<>%
+    mutate(Roles = paste0(Role_ID1, "-", Role_ID2))
+  
+```
+
+There are still many errors in the `.fam / .ped` : Many sample pairs classified as 'unrelated' based on the `.fam` relationships are actually siblings or parent-child pairs.
+```{r}
+tmp <- 
+filter(king.kin, Relationship == "unrelated" & Error == 1) %>%
+  select(FID, ID1, ID2, Roles, Sex_ID1, Sex_ID2, Kinship, Relationship, Error, everything())
+
+tmp
+```
+
+```{r}
+tmp %>% 
+  group_by(Roles) %>% count() %>% arrange(desc(n))
+```
+There are many proband-father / proband-mother / proband-sibling comparisons in this list. \WTF?
+
+➡️ Check their relationships based on the `.fam` file. 
+```{r}
+tmp.1 <- filter(tmp, Roles %nin% c("mother-father", "father-mother"))
+
+filter(fam.plink.update, Family_ID %in% tmp.1$FID ) %>% 
+  count(Family_ID) %>% count(n) %>% arrange(desc(nn))
+```
+
+Correct the way that I added the dummy parents on `.fam.from.ped` above — I only did it above for samples of 2-member families where the `motherID / fatherID == 0`.
+
+```{r message=FALSE}
+fam.from.ped <- read_tsv("KING/PLINK_ConvertVCF/custom_fam_files/targeted_seq_ped_clean.fam", col_names = F)
+
+names(fam.from.ped) <- names(ped.clean)
+```
+
+Create dummy parents for any sample that is not a mother/father and whose mother_ID / father_ID == 0. (Regardless of family size.)
+```{r}
+fam.from.ped %>%
+  left_join(. , mips.manifest[ , c("SampleName", "Relationship")], by=c("Sample_ID" = "SampleName")) %>%
+
+    mutate(motherID = if_else(Relationship %nin% c("mother", "father") & motherID == 0,
+                              paste0(Family_ID, '_mother'),
+                              motherID),
+           fatherID = if_else(Relationship %nin% c("mother", "father") & fatherID == 0,
+                              paste0(Family_ID, '_father'),
+                              fatherID))
+```
+
+[HERE][Mon May 28 - 10:10PM]
+
+
+
+2. plotly / ggvis
+--------------------
+
+
+--------------------
+
+
+
+
+# ______________________
+
+# 6. Identify samples excluded from the VCF.
+
+*n=819* samples (in `targeted_seq_ped.txt`) not in any of the VCFs.
+```{r}
+samples.nin.vcf <- read_tsv("KING/PLINK_ConvertVCF/custom_fam_files/targeted_seq_ped_clean_filtered-fromVCF.fam", col_names = F)
+```
+
+Low quality samples?
+```{r}
+Read sequencing report, blacklist samples.
+```
+
