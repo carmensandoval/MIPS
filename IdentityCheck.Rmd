@@ -3,31 +3,44 @@ title: "Prepare and subset MIPS ped file for Identity Check"
 output: html_notebook
 ---
 
-```{r}
+```{r message=FALSE}
 library(tidyverse)
 library(magrittr)
 library(compare)
 library(janitor)
 library(readxl)
 library(ggplot2)
+library(ggforce)
+library(ggthemes)
 library(Hmisc)
 ```
 
-# 1. File import.
+# 1. Import files.
 
-## 1.1 Clean  MIPS ped file (full).
-Produced from `clean_MIPS_ped.Rmd` ; removed KOR duplicates, binned affected status, etc.
-```{r}
-mips.ped <- read_tsv("~/Box Sync/MIPS/00_SampleLists/Clean/targeted_seq_ped_clean.txt")
-```
-*n = 14,186* samples.
+## Sample lists:
 
-## 1.2 Clean MIPS Sample Manifest.
+### Import clean MIPS ped file.
+Output from `clean_MIPS_ped.Rmd` ; removed KOR duplicates, binned affected statuses, etc.
 ```{r message=FALSE}
-mips.manifest <- read_tsv("~/Box Sync/MIPS/00_SampleLists/Clean/mips_sampleManifest_clean_jointSampleNames.txt")
+ped.clean <- read_tsv("~/Box Sync/MIPS/00_SampleLists/Clean/targeted_seq_ped_clean.txt")
+```
+*n = 14,186* samples. ✅
+
+### Import clean MIPS Sample Manifest.
+```{r message=FALSE}
+manifest.clean <- read_tsv("~/Box Sync/MIPS/00_SampleLists/Clean/mips_sampleManifest_clean_20180605.txt")
+```
+*n = 14,201* samples. ✅
+
+### Samples in `manifest.clean` but not in `ped.clean`: 
+*15* samples — 14 of unknown family, and UCSF_KOR-156-04_KOR_156-04 (not sure why this one got excluded from the .ped? )
+```{r}
+anti_join(mips.manifest, ped.clean, by = c("SampleName" = "Sample_ID"))
 ```
 
-## 1.3 List of ~15M SNPs in snp150Common.
+## Files for analysis of SNPs in our data:
+
+### List of ~15M SNPs in snp150Common.
 http://hgdownload.cse.ucsc.edu/goldenPath/hg38/database/snp150Common.txt.gz
 [Why I chose this list: OneNote][https://goo.gl/xa5kUH]
 
@@ -36,12 +49,12 @@ http://hgdownload.cse.ucsc.edu/goldenPath/hg38/database/snp150Common.txt.gz
 snp150.common <- read_tsv("~/Box Sync/MIPS/IdentityCheck/snp150/snp150Common.txt.gz", col_names=F)
 ```
 
-## 1.4 List of ~23,000 SNPs interrogated by Peddy.
+### List of ~23,000 SNPs interrogated by Peddy.
 ```{r}
 peddy.snps <- read_tsv("~/Box Sync/MIPS/IdentityCheck/peddy_1kG_sites.txt", col_names = F)
 ```
 
-## 1.5 BED file of MIPS  regions targeted for sequencing.
+### BED file of MIPS regions targeted for sequencing.
 *4,945 targeted regions with coverage*
 ```{r} 
 excel_sheets("~/Box Sync/MIPS/SequencingTargets/2-22-16 - ASD Targeted Sequencing Panel for Review.xlsx") 
@@ -52,7 +65,7 @@ target.regions <- read_excel("~/Box Sync/MIPS/SequencingTargets/2-22-16 - ASD Ta
 target.bed <- read_excel("~/Box Sync/MIPS/SequencingTargets/2-22-16 - ASD Targeted Sequencing Panel for Review.xlsx", sheet=3, col_names = F)
 ```
 
-### 1.4.1 What is the difference between the samples in sheet 1 and sheet 2?
+### ⬆️ What is the difference between the samples in sheet 1 and sheet 2?
 Rows: 4616 coverage / 4945 BED : 29 more rows in BED file, but 3 fewer genes?
 
 *3 genes* were dropped in the BED file.
@@ -87,37 +100,17 @@ target.coverage %>%
 # 2. Explore & convert data.
 
 ## 2.1 Breakdown by Affected Status 
-Of children in the MIPS ped.
-*n=3,383* affected children, or *91.5%* of all children in the MIPS ped.
+Of children in `ped.clean`.
+*n=3,381* affected children, or *91.6%* of all children in `ped.clean`.
 ```{r}
-filter(mips.ped, !(fatherID == 0) & !(motherID == 0)) %>% 
-  tabyl(status)
+filter(ped.clean, !(fatherID == 0) & !(motherID == 0)) %>% 
+  tabyl(status) %>% adorn_totals(where="row")
 ```
 
-## 2.2 Convert motherID and fatherID columns 
-To the same format as Sample_ID (UCSF_PatientID_SampleID format).
-```{r}
-mips.ped %<>% 
-  group_by(Family_ID) %>% 
-  mutate(motherID = ifelse(motherID != "0", 
-                           Sample_ID[grepl(motherID[motherID != "0"][1], Sample_ID)], 
-                           "0"), 
-         fatherID = ifelse(fatherID != "0", 
-                           Sample_ID[grepl(fatherID[fatherID != "0"][1], Sample_ID)], 
-                           "0")
-  )
-```
-
-Write out corrected ped file with father_IDs and mother_IDs in the same format (UCSF_XXX_XXX) as Sample_ID.
-```{r}
-write_tsv(mips.ped, "../00_SampleLists/Clean/ped.txt")
-# Already saved as targeted_seq_ped_clean.txt.
-```
-*n = 14,186* samples.
-
-## 2.3 Subset .fam samples for PLINK based on which sameples are in the VCF.
+## [NOW UNNECESSARY][Subset .fam samples for PLINK, based on which samples are in the VCF].
+{
 `.fam` and `subsetVCF.fam` were created in `bash`.
-(Add commands here; currently in OneNote.)
+(⬆️ Add commands here; currently in OneNote.)
 
 ```{bash}
 awk 'NR==FNR{a[$1];next}$2 in a==1' mips_vcf_sampleIDs.txt targeted_seq_ped_clean.fam > targeted_seq_ped_clean_subsetVCF.fam
@@ -129,8 +122,9 @@ awk 'NR==FNR{a[$1];next}$2 in a==1' mips_vcf_sampleIDs.txt targeted_seq_ped_clea
 fam.in.vcf <- read_tsv("KING/PLINK_ConvertVCF/custom_fam_files/targeted_seq_ped_clean_subsetVCF.fam",
                        col_names = F)
 ```
+}
 
-# 2.4. Update pedigree info on dummy .fam file created by PLINK --make-bed.
+# 2.4. Update pedigree info on the dummy .fam file created by PLINK --make-bed.
 Join the IIDs in `fam.plink` (dummy .fam) with the `targeted.seq.ped` columns, which contain the known FIDs, parentIDs, sex and genotypes.
 ```{r}
 fam.plink <- read_tsv("KING/PLINK_ConvertVCF/make-bed_output_v1-recalVCF/mips.fam", col_names = F) %>% 
@@ -559,13 +553,24 @@ These are sample-pairs whose family appears only once (one row) in `king.kin` (b
 *SOLUTION:*
 Create a dummy `fatherID` and `motherID` for each case-control sibling pair so that they are interpreted to be related by KING when reading the `.fam.`
 
-Also, check that fatherIDs and motherIDs are the oriingal ones even if they are not in the SampleID column (not in the VCF). Othersise, we are losing sibling relationships. Check what the `.fam` file used here has as values for non-VCF fatherIDs / motherIDs.
+Also, check that fatherIDs and motherIDs are the original IDs even if they are not in the SampleID column (not in the VCF). Othersise, we are losing sibling relationships.
+Check what the `.fam` file used here has as values for non-VCF fatherIDs / motherIDs. ✅
 
 ## Plot KING results.
 
 ### Plot relationships vs kinship coefficients.
 Relationships stated in the pedigree vs. estimated kinship coefficient from SNPs.
 
+```{bash}
+~/Software/KINGcode/king -b mips.bed --fam ../PLINKout_updatedWithPed_dummyParentsForallCaseControls.fam --bim mips.bim --related
+```
+Results saved in `KING_out` / `KING_run06.log
+
+```{r message=FALSE}
+king.kin <- read_tsv("KING/KING_out/king.kin")
+```
+
+Add column `$Relationship` to `king.kin` based on the values of Phi and Z0.
 Taken from `king_relplot.R` -- Get mz twins, full siblings, parent-siblings, unrelated pairs (parents).
 ```{r}
 d0 <- king.kin$Phi == 0.5                          # mz twins / duplicates
@@ -576,113 +581,61 @@ dU <- king.kin$Phi == 0                            # unrelated
 dO <- !d0 & !d1.PO & !d1.FS & !d2 & !dU
 ```
 
-Add column `$Relationship` to `king.kin` based on the values of Phi and Z0.
-```{r}
-king.kin %<>%
-  mutate(Relationship = case_when(.$Phi == 0.25 & Z0 == 0 ~ "parent-child",
-                                  .$Phi == 0.25 & Z0 > 0 ~ "full-sibling", 
-                                  .$Phi == 0.5 ~ "mz-twin", 
-                                  .$Phi == 0.125 ~ "2nd-degree",
-                                  .$Phi == 0 ~ "unrelated",
-                                  TRUE ~ "NA"            
-                                  )
-         )
-```
 
-\Plot stated Relationships vs kinship coefficients \AFTER adding dummy parents for case-control siblings.
-```{r}
-ggplot(king.kin, aes(Relationship, Kinship)) +
-  geom_jitter(aes(colour=factor(Error)), alpha=0.5) +
-  scale_color_manual(values=c("#50C878", "#FADA5E","red"),
-                     labels=c("0", "WARNING", "ERROR")) +
-  theme_hc(bgcolor = "darkunica", base_size = 12) + 
-  theme(plot.title = element_text(hjust = 0.1), 
-        plot.subtitle = element_text(hjust = 0.11, vjust=1), 
-        axis.title.y=element_text(vjust = 2),
-        axis.title.x=element_text(vjust = -2)
-        ) +
-  scale_y_continuous(breaks=c(-0.5, -0.25, 0, 0.25, 0.5)) +
-  labs(title="Kinship Coefficient",
-       subtitle="within-family pairwise estimate",
-       x="Stated Relationship", 
-       y="Kinship Coefficient estimated from SNPs",
-       colour="Flag"
-      )
-
-```
-```{r}
-library(ggforce)
-
-ggplot(filter(king.kin, !Relationship=="NA")) +
-  geom_sina(aes(x=Relationship, y=Kinship, colour=factor(Error)), alpha=0.3, scale=F) +
-  scale_color_manual(values=c("#50C878", "#FADA5E","red"),
-                     labels=c("0", "WARNING", "ERROR")) +
-  theme_hc(bgcolor = "darkunica", base_size = 12) + 
-  theme(plot.title = element_text(hjust = 0.1), 
-        plot.subtitle = element_text(hjust = 0.11, vjust=1), 
-        axis.title.y=element_text(vjust = 2),
-        axis.title.x=element_text(vjust = -2)
-        ) +
-  scale_y_continuous(breaks=c(-0.5, -0.25, 0, 0.25, 0.5)) +
-  labs(title="Kinship Coefficient",
-       subtitle="within-family pairwise estimate",
-       x="Stated Relationship", 
-       y="Kinship Coefficient estimated from SNPs",
-       colour="Flag"
-      )
-
-```
-⬆️
-Has the distribution actually changed from before updating the parents for the case-control siblings in the .ped and .fam files? 
---------------------
-i.e., Are there fewer points in the `Unrelated` category, and more in the `Full-Sibling` category?
-**YES** — 1,822 NEW sibling pairs.
-
-➡️ `king.kin`
-----------
-*n=1,841* unrelated samples in `king.kin` ([AFTER][adding dummy case-control parents]) — all z0 == 1 and Phi == 0.
+*n=2,353* unrelated samples in `king.kin` ([AFTER][adding dummy case-control parents for ALL children]) — all z0 == 1 and Phi == 0.
 ```{r}
 king.kin %>%
   # filter(Relationship == "unrelated" | Relationship == "full-sibling") %>%
   tabyl(Relationship, Error) %>% adorn_totals(where=c("row", "col")) %>% as.tibble
 ```
-⬆️ [PENDING][Who are these 5 'NA' pairs, and why do they come up only AFTER adding the dummy parents?]
-All pairs in the `NA` Stated Relationship group have a [Phi == 0.375][— What does this mean?] 
+
+[Plot][-] Relationship vs Kinship Coefficient; AFTER adding dummy parents to ALL children with missing Father_ID / Mother_ID.
 ```{r}
-king.kin %>% filter(Relationship == "NA")
+library(ggforce)
+library(ggthemes)
+
+ggplot(filter(king.kin, !Relationship=="NA")) +
+  geom_sina(aes(x = Relationship, y = Kinship, 
+                    colour = factor(Error)), 
+              alpha=0.3, 
+              size=1,
+              scale=F) +
+  scale_color_manual(values=c("#50C878", "#FADA5E","red"),
+                     labels=c("0", "WARNING", "ERROR")) +
+  theme_hc(bgcolor = "darkunica", base_size = 12) + 
+  theme(plot.title = element_text(size= 12, hjust = 0.1), 
+        plot.subtitle = element_text(hjust = 0.11, vjust=1), 
+        axis.title.y=element_text(vjust = 2),
+        axis.title.x=element_text(vjust = -2)
+        ) +
+  scale_y_continuous(breaks=c(-0.5, -0.25, 0, 0.25, 0.5)) +
+  labs(title="Kinship Coefficient [After Case-Control Parents Correction V3]",
+       subtitle="within-family pairwise estimate",
+       x="Stated Relationship", 
+       y="Kinship Coefficient estimated from SNPs",
+       colour="Flag"
+      )
+
+ggsave("KING_withinFamily_relationship_kinship_sinaplot.pdf")
+
+# Create a shareable link to your chart
+# Set up API credentials: https://plot.ly/r/getting-started
+chart_link = api_create(p, filename="geom_jitter")
+chart_link
 ```
 
-➡️ `kin.kin.nodummy`
-----------
-How many `unrelated` and `full-sibling` relationships were there in `king.kin` [BEFORE][updating the dummy parents]?
-```{r message=FALSE}
-king.kin.nodummy <- read_tsv("KING/KING_otherRuns/king_run02_caseControlParents_notCorrected/king.kin")
-```
-
-Add column `$Relationship` to `king.kin` based on the values of Phi and Z0.
+Plotly version (geom_jitter):
 ```{r}
-king.kin.nodummy %<>%
-  mutate(Relationship = case_when(.$Phi == 0.25 & Z0 == 0 ~ "parent-child",
-                                  .$Phi == 0.25 & Z0 > 0 ~ "full-sibling", 
-                                  .$Phi == 0.5 ~ "mz-twin", 
-                                  .$Phi == 0.125 ~ "2nd-degree",
-                                  .$Phi == 0 ~ "unrelated",
-                                  TRUE ~ "NA"            
-                                  )
-         )
-```
+library(plotly)
 
-*n=3,651* unrelated samples in `king.kin` ([BEFORE][adding dummy case-control parents]) — all z0 == 1 and Phi == 0.
-```{r}
-king.kin.nodummy %>%
-  # filter(Relationship == "unrelated" | Relationship == "full-sibling") %>%
-  tabyl(Relationship, Error) %>% adorn_totals(where=c("row", "col")) %>% as.tibble
-```
-
-\Plot Relationship vs Kinship Coefficient; \BEFORE adding dummy parents.
-```{r}
-ggplot(filter(king.kin.nodummy, !Relationship=="NA")) +
-  geom_sina(aes(x=Relationship, y=Kinship, colour=factor(Error)), alpha=0.3, scale=F) +
+p.rel.kinship <- 
+ggplot(filter(king.kin, !Relationship=="NA")) +
+  geom_jitter(aes(x = Relationship, y = Kinship, 
+                  colour = factor(Error), 
+                  text = paste("Family_ID: ",FID,"\n",Role_ID1,": ",ID1,"\n",Role_ID2,": ",ID2)), 
+              alpha=0.3, 
+              size=3,
+              scale=F) +
   scale_color_manual(values=c("#50C878", "#FADA5E","red"),
                      labels=c("0", "WARNING", "ERROR")) +
   theme_hc(bgcolor = "darkunica", base_size = 12) + 
@@ -692,23 +645,32 @@ ggplot(filter(king.kin.nodummy, !Relationship=="NA")) +
         axis.title.x=element_text(vjust = -2)
         ) +
   scale_y_continuous(breaks=c(-0.5, -0.25, 0, 0.25, 0.5)) +
-  labs(title="Kinship Coefficient [Before Case-Control Parents Correction]",
+  labs(title="Kinship Coefficient [After Case-Control Parents Correction]",
        subtitle="within-family pairwise estimate",
        x="Stated Relationship", 
        y="Kinship Coefficient estimated from SNPs",
        colour="Flag"
       )
+
+p <- ggplotly(p.rel.kinship)
+
+p
+
+# Create a shareable link to your chart
+# Set up API credentials: 
+Sys.setenv("plotly_username"="carmeyeii")
+Sys.setenv("plotly_api_key"="ZEOPDL33EX7igyejwOPd")
+chart_link = api_create(p, filename="KING_relationshipVSkinship_geom_jitter")
+chart_link
 ```
 
-## Figure out who the `ERROR` and `WARNING`-flagged sample pairs are — what is the Relationship between them?
 
-1. Add Relationship — (from SampleManifest) column to each pair-wise comparison in `king.kin`.
+Add column `Relationship` — (Role from SampleManifest) to each pair-wise comparison in `king.kin`.
 --------------
 ```{r}
 manifest.tmp <- 
-  mips.manifest %>%
-  select(SampleName, Relationship, Gender) %>% 
-  rename(Role = Relationship)
+  manifest.clean %>%
+  select(SampleName, Role, Gender)
 
 king.kin <-
   left_join(king.kin, manifest.tmp, by=c("ID1" = "SampleName")) %>%
@@ -718,63 +680,70 @@ king.kin <-
 
 king.kin %<>%
     mutate(Roles = paste0(Role_ID1, "-", Role_ID2))
-  
 ```
 
-There are still many errors in the `.fam / .ped` : Many sample pairs classified as 'unrelated' based on the `.fam` relationships are actually siblings or parent-child pairs.
+Unrelated samples with ERROR flag:
 ```{r}
-tmp <- 
+king.unrelated.error <- 
 filter(king.kin, Relationship == "unrelated" & Error == 1) %>%
   select(FID, ID1, ID2, Roles, Sex_ID1, Sex_ID2, Kinship, Relationship, Error, everything())
 
-tmp
+king.unrelated.error
 ```
 
 ```{r}
-tmp %>% 
+king.unrelated.error %>% 
   group_by(Roles) %>% count() %>% arrange(desc(n))
 ```
-There are many proband-father / proband-mother / proband-sibling comparisons in this list. \WTF?
 
 ➡️ Check their relationships based on the `.fam` file. 
 ```{r}
-tmp.1 <- filter(tmp, Roles %nin% c("mother-father", "father-mother"))
+filter(king.unrelated.error, Roles %nin% c("mother-father", "father-mother")) %>% 
+  arrange(Roles) %>% 
+  left_join( . , ped.for.king, by=c("ID1" = "IID" )) %>% 
+  select(FID:Roles, fatherID, motherID, everything())
+  # left_join( . , fam.plink.update, by=c("FID" = "Family_ID" )) %>% 
+  # count(FID) %>% count(n) %>% arrange(desc(nn)) %>% 
+  # rename(FamilySize = n, Occurences = nn)
 
-filter(fam.plink.update, Family_ID %in% tmp.1$FID ) %>% 
-  count(Family_ID) %>% count(n) %>% arrange(desc(nn))
+tmp <- filter(king.unrelated.error, Roles %nin% c("mother-father", "father-mother")) %>% 
+  arrange(Roles) %>% 
+  left_join( . , fam.plink.update, by=c("ID1" = "IID" )) %>% 
+  select(FID:Roles, fatherID, motherID, everything())
+
+tmp <- filter(tmp, str_detect(FID, "DEASD") & Roles=="proband-father")
+tmp
+compare(tmp$ID2 , tmp$fatherID)
 ```
 
-Correct the way that I added the dummy parents on `.fam.from.ped` above — I only did it above for samples of 2-member families where the `motherID / fatherID == 0`.
 
-```{r message=FALSE}
-fam.from.ped <- read_tsv("KING/PLINK_ConvertVCF/custom_fam_files/targeted_seq_ped_clean.fam", col_names = F)
+[HERE][6/6/2018]
 
-names(fam.from.ped) <- names(ped.clean)
+## Sex check plot
+
+```{r sex-plot, message=FALSE}
+report.sex <- read_excel("~/Box Sync/MIPS/00_SampleLists/Original/11-2-17-UCSF-TargetedSequencingUpdate.xlsx",
+                         sheet="QC Stats (N=13,389)")
+
+plink.sexcheck <- read_table("KING/PLINK_ConvertVCF/make-bed_out_recalVCF/plink.sexcheck")
+
+ggplot(plink.sexcheck) + 
+  geom_jitter(aes(x=factor(PEDSEX), 
+    y=Fmetric, color=factor(STATUS) 
+    ))
 ```
 
-Create dummy parents for any sample that is not a mother/father and whose mother_ID / father_ID == 0. (Regardless of family size.)
-```{r}
-fam.from.ped %>%
-  left_join(. , mips.manifest[ , c("SampleName", "Relationship")], by=c("Sample_ID" = "SampleName")) %>%
-
-    mutate(motherID = if_else(Relationship %nin% c("mother", "father") & motherID == 0,
-                              paste0(Family_ID, '_mother'),
-                              motherID),
-           fatherID = if_else(Relationship %nin% c("mother", "father") & fatherID == 0,
-                              paste0(Family_ID, '_father'),
-                              fatherID))
-```
-
-[HERE][Mon May 28 - 10:10PM]
-
-
-
-2. plotly / ggvis
 --------------------
 
+```{r sex-plot, message=FALSE}
 
---------------------
+s <- ggplot(plink.sexcheck) + 
+  geom_jitter(aes(x=factor(PEDSEX), y=Fmetric, color=factor(STATUS), text = paste("Family_ID: ",FID,"\n",ID1,"\n")))
 
+ggplotly(s)
+
+
+```
 
 
 
@@ -786,9 +755,3 @@ fam.from.ped %>%
 ```{r}
 samples.nin.vcf <- read_tsv("KING/PLINK_ConvertVCF/custom_fam_files/targeted_seq_ped_clean_filtered-fromVCF.fam", col_names = F)
 ```
-
-Low quality samples?
-```{r}
-Read sequencing report, blacklist samples.
-```
-
