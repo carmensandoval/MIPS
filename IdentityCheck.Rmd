@@ -600,20 +600,20 @@ ggplot(filter(king.kin, !Relationship=="NA")) +
               alpha=0.3, 
               size=1,
               scale=F) +
-  scale_color_manual(values=c("#50C878", "#FADA5E","red"),
-                     labels=c("0", "WARNING", "ERROR")) +
-  theme_hc(bgcolor = "darkunica", base_size = 12) + 
+  scale_color_manual(values=c("#50C878", "#FADA5E", "#f44259"),
+                     labels=c("OK", "WARNING", "ERROR")) +
+  theme_minimal() + 
   theme(plot.title = element_text(size= 12, hjust = 0.1), 
         plot.subtitle = element_text(hjust = 0.11, vjust=1), 
         axis.title.y=element_text(vjust = 2),
         axis.title.x=element_text(vjust = -2)
         ) +
   scale_y_continuous(breaks=c(-0.5, -0.25, 0, 0.25, 0.5)) +
-  labs(title="Kinship Coefficient [After Case-Control Parents Correction V3]",
-       subtitle="within-family pairwise estimate",
-       x="Stated Relationship", 
-       y="Kinship Coefficient estimated from SNPs",
-       colour="Flag"
+  labs(title="Kinship Coefficient [After Correcting for Case-Control Parents]",
+       subtitle="Within-family Pairwise Estimate",
+       x="Pedigree-Stated Relationship", 
+       y="Kinship Coefficient estimated from shared SNPs",
+       colour="KING Flag"
       )
 
 ggsave("KING_withinFamily_relationship_kinship_sinaplot.pdf")
@@ -627,6 +627,8 @@ chart_link
 Plotly version (geom_jitter):
 ```{r}
 library(plotly)
+library(DT)
+library(crosstalk)
 
 p.rel.kinship <- 
 ggplot(filter(king.kin, !Relationship=="NA")) +
@@ -634,34 +636,39 @@ ggplot(filter(king.kin, !Relationship=="NA")) +
                   colour = factor(Error), 
                   text = paste("Family_ID: ",FID,"\n",Role_ID1,": ",ID1,"\n",Role_ID2,": ",ID2)), 
               alpha=0.3, 
-              size=3,
+              size=1,
               scale=F) +
-  scale_color_manual(values=c("#50C878", "#FADA5E","red"),
-                     labels=c("0", "WARNING", "ERROR")) +
-  theme_hc(bgcolor = "darkunica", base_size = 12) + 
+  scale_color_manual(values=c("#50C878", "#FADA5E","#f44259"),
+                     labels=c("OK", "WARNING", "ERROR")) +
+  theme_minimal() + 
   theme(plot.title = element_text(hjust = 0.1), 
-        plot.subtitle = element_text(hjust = 0.11, vjust=1), 
-        axis.title.y=element_text(vjust = 2),
+        plot.subtitle = element_text(hjust = 0.11, vjust=0.5), 
+        axis.title.y=element_text(vjust = 4),
         axis.title.x=element_text(vjust = -2)
         ) +
   scale_y_continuous(breaks=c(-0.5, -0.25, 0, 0.25, 0.5)) +
-  labs(title="Kinship Coefficient [After Case-Control Parents Correction]",
-       subtitle="within-family pairwise estimate",
-       x="Stated Relationship", 
-       y="Kinship Coefficient estimated from SNPs",
-       colour="Flag"
+  labs(title="Kinship Coefficient\n
+              Within-Family Pairwise Estimate  [After Correcting for Case-Control Parents]",
+       x="Pedigree-Stated Relationship", 
+       y="Kinship Coefficient estimated from shared SNPs",
+       colour="KING Flag"
       )
 
-p <- ggplotly(p.rel.kinship)
+a <- ggplotly(p.rel.kinship) %>% 
+  add_markers(alpha = 0.5) %>%
+  highlight("plotly_selected", dynamic = TRUE)
 
-p
+options(persistent = TRUE)
 
-# Create a shareable link to your chart
-# Set up API credentials: 
-Sys.setenv("plotly_username"="carmeyeii")
-Sys.setenv("plotly_api_key"="ZEOPDL33EX7igyejwOPd")
-chart_link = api_create(p, filename="KING_relationshipVSkinship_geom_jitter")
-chart_link
+p <- datatable(king.kin)
+
+kinship.plotly.table <- bscols(widths = c(6, 4), a, p)
+htmlwidgets::saveWidget(as_widget(kinship.plotly.table), "KING_withinFamily_relationship_kinship_plotlyDataTable.html")
+
+# style(p, hoverinfo = "y")
+
+
+htmlwidgets::saveWidget(as_widget(a), "KING_withinFamily_relationship_kinship_plotly.html")
 ```
 
 
@@ -721,27 +728,180 @@ compare(tmp$ID2 , tmp$fatherID)
 
 ## Sex check plot
 
-```{r sex-plot, message=FALSE}
+```{r, message=FALSE}
 report.sex <- read_excel("~/Box Sync/MIPS/00_SampleLists/Original/11-2-17-UCSF-TargetedSequencingUpdate.xlsx",
                          sheet="QC Stats (N=13,389)")
 
 plink.sexcheck <- read_table("KING/PLINK_ConvertVCF/make-bed_out_recalVCF/plink.sexcheck")
-
-ggplot(plink.sexcheck) + 
-  geom_jitter(aes(x=factor(PEDSEX), 
-    y=Fmetric, color=factor(STATUS) 
-    ))
 ```
 
---------------------
+```{r}
+plink.sexcheck <- left_join(plink.sexcheck, report.sex[ , c("Sample Name", "Sequenced Gender")], by=c("IID" = "Sample Name"))
+```
 
-```{r sex-plot, message=FALSE}
 
-s <- ggplot(plink.sexcheck) + 
-  geom_jitter(aes(x=factor(PEDSEX), y=Fmetric, color=factor(STATUS), text = paste("Family_ID: ",FID,"\n",ID1,"\n")))
+```{r sex-ggplot}
+ggplot(plink.sexcheck) + 
 
-ggplotly(s)
+  geom_jitter(aes(x=factor(PEDSEX), 
+                  y=Fmetric, 
+                  colour=`Sequenced Gender` 
+              ),
+              alpha=0.3, 
+              size=2,
+              scale=F
+  ) +
+  scale_color_manual(values=c("#b71e3f", "#1f59b7","#514e4f"),
+                     labels=c("FEMALE", "MALE", "UNKNOWN")) +
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0.1), 
+        plot.subtitle = element_text(hjust = 0.11, vjust=0.5), 
+        axis.title.y=element_text(vjust = 4),
+        axis.title.x=element_text(vjust = -2)
+        ) +
+  scale_y_continuous(breaks=c(-0.5, -0.25, 0, 0.25, 0.5)) +
+  labs(title="PLINK Sex-Check\n
+              Within-Family Pairwise Estimate",
+       x="Pedigree-Stated Sex", 
+       y="X-Chr Homozygosity Estimate from SNPs",
+       colour="Sequencing Report Sex"
+      )
+```
 
+GGPLOT SEX-CHECK
+```{r sex-ggplot}
+plink.sexcheck %<>%  
+  mutate(
+         SequencedGender = case_when(SequencedGender == "Female" ~ 2,
+                                     SequencedGender ==  "Male"  ~ 1) %>%
+                           factor(., levels=c(0,1,2))
+         ) %>%
+  rename(SequencedGender   = `Sequenced Gender`,
+         ChrX_Homozygosity = Fmetric)
+
+plot.sex <- 
+  ggplot() + 
+  
+  geom_rect(aes(xmin=-Inf,xmax=Inf, ymin=-5,ymax=0.2),alpha=0.2, fill="#b71e3f") +
+  geom_rect(aes(xmin=-Inf,xmax=Inf, ymin=0.8,ymax=1),alpha=0.2, fill="#1f59b7") +
+  geom_rect(aes(xmin=-Inf,xmax=Inf, ymin=0.2, ymax=0.8),alpha=0.2, fill="#514e4f") +
+  
+  geom_jitter(data = filter(plink.sexcheck, SequencedGender == PEDSEX),
+              aes(x = PEDSEX, 
+                  y = ChrX_Homozygosity, 
+                  colour = SequencedGender,
+                  text = paste("Family_ID:", FID,"\nSampleName:", IID)
+                  ),
+              alpha=0.2, 
+              size=1.5,
+              height=0.1
+              ) +
+
+  geom_jitter(data = filter(plink.sexcheck, ! SequencedGender == PEDSEX),
+              aes(x = PEDSEX, 
+                  y = ChrX_Homozygosity, 
+                  colour = SequencedGender,
+                  text = paste("Family_ID:", FID,"\nSampleName:", IID)
+              ),
+              alpha=0.5, 
+              size=2,
+              height=0.1
+  ) +
+  
+  scale_color_manual(values=c("#1f59b7", "#b71e3f"),
+                     labels=c("MALE", "FEMALE")) +
+  
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0), 
+        plot.subtitle = element_text(hjust = 0.11, vjust=0.5), 
+        axis.title.y = element_text(vjust = 2),
+        axis.title.x = element_text(vjust = -2),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.y = element_blank()
+        ) + 
+  
+  scale_y_continuous(breaks=seq(-5, 1, by=0.2)) +
+  scale_x_discrete(labels=c("unknown", "male", "female")) +
+  
+  labs(title="PLINK Sex-Check vs Pedigree-Stated Sex",
+       x="Pedigree-Stated Sex", 
+       y="X Chromosome Homozygosity Estimate from SNPs",
+       colour="Sequencing Report Sex"
+      )
+
+ggsave("PLINKSexCheck_plot.pdf")
+
+```
+
+PLOTLY SEX CHECK
+```{r sex-plotly, message=FALSE}
+plot.sex <- 
+  ggplot() + 
+  geom_jitter(data = filter(plink.sexcheck, SequencedGender == PEDSEX),
+              aes(x = PEDSEX, 
+                  y = ChrX_Homozigosity, 
+                  colour = SequencedGender,
+                  text = paste("Family_ID:", FID,"\nSampleName:", IID)
+                  ),
+              alpha=0.2, 
+              size=1.5,
+              height=0.1
+              ) +
+
+  geom_jitter(data = filter(plink.sexcheck, ! SequencedGender == PEDSEX),
+              aes(x = PEDSEX, 
+                  y = ChrX_Homozigosity, 
+                  colour = SequencedGender,
+                  text = paste("Family_ID:", FID,"\nSampleName:", IID)
+              ),
+              alpha=0.5, 
+              size=2,
+              height=0.1
+  ) +
+  
+  scale_color_manual(values=c("#1f59b7", "#b71e3f"),
+                     labels=c("MALE", "FEMALE")) +
+  
+  theme_minimal() + 
+  theme(plot.title = element_text(hjust = 0), 
+        plot.subtitle = element_text(hjust = 0.11, vjust=0.5), 
+        axis.title.y = element_text(vjust = 2),
+        axis.title.x = element_text(vjust = -2),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.y = element_blank()
+        ) + 
+  
+  scale_y_continuous(breaks=seq(-5, 1, by=0.2)) +
+  scale_x_discrete(labels=c("unknown", "male", "female")) +
+  
+  labs(title="PLINK Sex-Check vs Pedigree-Stated Sex",
+       x="Pedigree-Stated Sex", 
+       y="X Chromosome Homozigosity Estimate from SNPs",
+       colour="Sequencing Report Sex"
+      )
+
+
+plotly.sex <- ggplotly(plot.sex)
+
+plotly.sex <- layout(plotly.sex,
+  
+               shapes = list(
+                             list(type = "rect",
+                                  fillcolor = "#b71e3f", line = list(color = "#b71e3f"), opacity = 0.3,
+                                  x0 = 0, x1 = 2, xref = "x",
+                                  y0 = -5, y1 = 0.2, yref = "y"),
+                               
+                             list(type = "rect",
+                                   fillcolor = "#1f59b7", line = list(color = "#1f59b7"), opacity = 0.3,
+                                   x0 = 0, x1 = 2, xref = "x",
+                                   y0 = 0.2, y1 = 0.8, yref = "y"),
+                               
+                               list(type = "rect",
+                                   fillcolor = "#514e4f", line = list(color = "#514e4f"), opacity = 0.3,
+                                   x0 = 0, x1 = 2, xref = "x",
+                                   y0 = 0.8, y1 = 1, yref = "y")))
+
+htmlwidgets::saveWidget(as_widget(plotly.sex), "sexCheck.html")
 
 ```
 
